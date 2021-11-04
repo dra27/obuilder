@@ -9,29 +9,85 @@ on:
 
 jobs:
   build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Setup
+        id: run
+        run: |
+          chmod a+w .
+          echo "::set-output name=commit::$(git rev-parse HEAD)"
+
+      - name: _opam cache
+        id: opam-cache
+        uses: actions/cache@v2
+        with:
+          path: _opam
+          key: ${{ runner.os }}-opam-${{ hashFiles('*.opam') }}
+
+      - name: Build local switch
+        run: |
+          docker build -t runner .
+          docker run --rm -v $PWD:/home/opam/obuilder -w /home/opam/obuilder runner PATH="/home/opam/.opam/4.13/bin:$PATH" /usr/bin/opam-2.1 switch create . ocaml-system
+        if: steps.opam-cache.outputs.cache-hit != 'true'
+
+      - name: _build cache
+        id: build-cache
+        uses: actions/cache@v2
+        with:
+          path: _build
+          key: ${{ runner.os }}-${{ steps.run.outputs.commit }}
+
+      - name: Build obuilder
+        run: |
+          docker build -t runner .
+          docker run --rm -v $PWD:/home/opam/obuilder runner PATH="/home/opam/.opam/4.13/bin:$PATH" make -C /home/opam/obuilder ci
+        if: steps.build-cache.outputs.cache-hit != 'true'
+
+  test:
+    needs: build
+
     strategy:
       fail-fast: false
       matrix:
         os:
           - ubuntu-latest
-        ocaml-compiler:
-          - 4.13.x
+        backend:
+          - zfs
+          - btrfs
 
     runs-on: ${{ matrix.os }}
 
     steps:
-      - run: |
-          sudo apt-get --allow-releaseinfo-change update && \
-          sudo apt-get install -y btrfs-progs zfs-dkms zfsutils-linux
-
       - name: Checkout code
         uses: actions/checkout@v2
 
-      - name: Use OCaml ${{ matrix.ocaml-compiler }}
-        uses: ocaml/setup-ocaml@v2
-        with:
-          ocaml-compiler: ${{ matrix.ocaml-compiler }}
+      - name: Setup
+        id: run
+        run: |
+          chmod a+w .
+          echo "::set-output name=commit::$(git rev-parse HEAD)"
 
-      - run: opam install . --deps-only --with-test
+      - name: BTRFS
+        run: |
+          sudo apt-get --allow-releaseinfo-change update && \
+          sudo apt-get install -y btrfs-progs
+        if: ${{ matrix.backend == 'btrfs' }}
+
+      - name: ZFS
+        run: |
+          sudo apt-get --allow-releaseinfo-change update && \
+          sudo apt-get install -y zfs-dkms zfsutils-linux
+        if: ${{ matrix.backend == 'zfs' }}
+
+      - name: _build cache
+        id: build-cache
+        uses: actions/cache@v2
+        with:
+          path: _build
+          key: ${{ runner.os }}-${{ steps.run.outputs.commit }}
 
       - run: ./.run-gha-tests.sh
